@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard Analítico Crypto</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #fafaf8; }
+  * { box-sizing: border-box; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } = Recharts;
+
+// ---------- Formatação ----------
+const fmtUSD = (n) => {
+  if (n == null || isNaN(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e9) return `$${(n / 1e9).toFixed(2)}b`;
+  if (a >= 1e6) return `$${(n / 1e6).toFixed(2)}m`;
+  if (a >= 1e3) return `$${(n / 1e3).toFixed(1)}k`;
+  return `$${n.toFixed(0)}`;
+};
+const fmtPct = (n) => {
+  if (n == null || isNaN(n)) return "—";
+  const s = n >= 0 ? "+" : "";
+  return `${s}${n.toFixed(2)}%`;
+};
+const pctColor = (n) => (n == null || isNaN(n) ? "#888" : n >= 0 ? "#1a7f37" : "#cf222e");
+
+// ---------- App ----------
+function CryptoDash() {
+  const [state, setState] = useState({ loading: true, error: null });
+  const [updated, setUpdated] = useState("");
+  const [auto, setAuto] = useState(false);
+  const timer = useRef(null);
+
+  const load = async () => {
+    setState((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const safe = async (url) => {
+        try {
+          const r = await fetch(url);
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return await r.json();
+        } catch (e) { return { __err: String(e) }; }
+      };
+      const [chainTvl, protocols, chains, stables, stableChart, fees, revenue, dexs] =
+        await Promise.all([
+          safe("https://api.llama.fi/v2/historicalChainTvl"),
+          safe("https://api.llama.fi/protocols"),
+          safe("https://api.llama.fi/v2/chains"),
+          safe("https://stablecoins.llama.fi/stablecoins?includePrices=true"),
+          safe("https://stablecoins.llama.fi/stablecoincharts/all"),
+          safe("https://api.llama.fi/overview/fees?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"),
+          safe("https://api.llama.fi/overview/fees?dataType=dailyRevenue&excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"),
+          safe("https://api.llama.fi/overview/dexs?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"),
+        ]);
+      const result = buildSections({ chainTvl, protocols, chains, stables, stableChart, fees, revenue, dexs });
+      setUpdated(new Date().toLocaleString("pt-PT"));
+      setState({ loading: false, error: null, ...result });
+    } catch (e) { setState({ loading: false, error: String(e) }); }
+  };
+
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (auto) timer.current = setInterval(load, 5 * 60 * 1000);
+    else if (timer.current) clearInterval(timer.current);
+    return () => timer.current && clearInterval(timer.current);
+  }, [auto]);
+
+  if (state.loading && !state.regime) return <Shell><Loading /></Shell>;
+  if (state.error) return <Shell><ErrBox msg={state.error} onRetry={load} /></Shell>;
+
+  return (
+    <Shell>
+      <Header updated={updated} onReload={load} auto={auto} setAuto={setAuto} loading={state.loading} />
+      <RegimeBanner regime={state.regime} />
+      <KPIs kpis={state.kpis} />
+      <Insights insights={state.insights} />
+      <Section title="Saúde de stablecoins" err={state.stableErr}><StableHealth data={state.stable} /></Section>
+      <Section title="Maiores altas de TVL por faixa de tamanho" err={state.tvlErr}><TvlTiers tiers={state.tvlTiers} /></Section>
+      <Section title="Líderes em receita (24h)" err={state.revErr}><RevenueLeaders data={state.revLeaders} /></Section>
+      <Section title="Setores que mais crescem" err={state.catErr}><Sectors data={state.sectors} note="Dados de categoria requerem o tier Pro (via Cowork)." /></Section>
+      <Section title="Tendências de rede — para onde o capital migra" err={state.chainErr}><ChainTrends data={state.chainTrends} /></Section>
+      <Footer />
+    </Shell>
+  );
+}
+
+// ---------- Lógica ----------
+function buildSections({ chainTvl, protocols, chains, stables, stableChart, fees, revenue, dexs }) {
+  const out = {};
+  try {
+    const series = chainTvl.__err ? [] : chainTvl;
+    const last = series[series.length - 1]?.tvl;
+    const d7 = series[series.length - 8]?.tvl;
+    const d30 = series[series.length - 31]?.tvl;
+    const c7 = d7 ? ((last - d7) / d7) * 100 : null;
+    const c30 = d30 ? ((last - d30) / d30) * 100 : null;
+    let label = "Mercado lateral", tone = "neutral";
+    if (c30 != null && c30 <= -5) { label = "Mercado em correção"; tone = "down"; }
+    else if (c30 != null && c30 >= 5) { label = "Mercado em expansão"; tone = "up"; }
+    out.regime = { label, tone, tvl: last, c7, c30 };
+    out.kpis = { tvl: last, c30 };
+  } catch (e) { out.regime = { label: "Indisponível", tone: "neutral" }; out.kpis = {}; }
+  try { out.kpis.dexVol = dexs.__err ? null : dexs.total24h; } catch { out.kpis.dexVol = null; }
+  try { out.kpis.fees24h = fees.__err ? null : fees.total24h; } catch { out.kpis.fees24h = null; }
+
+  try {
+    const list = stables.__err ? [] : (stables.peggedAssets || []);
+    const rows = list.map((s) => ({ sym: s.symbol, circ: s.circulating?.peggedUSD ?? 0 }))
+      .filter((r) => r.circ > 0).sort((a, b) => b.circ - a.circ);
+    const total = rows.reduce((a, r) => a + r.circ, 0);
+    const top7 = rows.slice(0, 7);
+    const chart = stableChart.__err ? [] : stableChart;
+    const tail = chart.slice(-30).map((p) => ({
+      date: new Date(p.date * 1000).toLocaleDateString("pt-PT", { day: "2-digit", month: "2-digit" }),
+      val: p.totalCirculatingUSD?.peggedUSD ?? 0,
+    }));
+    const curr = tail[tail.length - 1]?.val, v7 = tail[tail.length - 8]?.val, v30 = tail[0]?.val;
+    const ch7 = v7 ? ((curr - v7) / v7) * 100 : null;
+    const ch30 = v30 ? ((curr - v30) / v30) * 100 : null;
+    const alert = (ch7 != null && ch7 <= -0.5) || (ch30 != null && ch30 <= -1);
+    out.stable = { top7, total, chart: tail, ch7, ch30, alert };
+    out.kpis.stableSupply = total;
+    out.stableErr = stables.__err || stableChart.__err || null;
+  } catch (e) { out.stableErr = String(e); }
+
+  try {
+    const ps = protocols.__err ? [] : protocols;
+    const enrich = ps.map((p) => {
+      const tvl = p.tvl ?? 0, ch1 = p.change_1d, ch7 = p.change_7d;
+      const gain7 = ch7 != null && ch7 > -100 ? tvl - tvl / (1 + ch7 / 100) : null;
+      return { name: p.name, tvl, ch1, ch7, gain7 };
+    }).filter((p) => p.tvl > 0 && p.ch7 != null);
+    const tier = (lo, hi) => enrich.filter((p) => p.tvl >= lo && (hi == null || p.tvl < hi))
+      .sort((a, b) => b.ch7 - a.ch7).slice(0, 8)
+      .map((p) => ({ ...p, badge: p.gain7 != null && p.gain7 >= 50e6 ? "solid" : p.gain7 != null && p.gain7 < 5e6 ? "low" : null }));
+    out.tvlTiers = { big: tier(1e9, null), mid: tier(100e6, 1e9), small: tier(1e6, 100e6) };
+    out.tvlErr = protocols.__err || null;
+  } catch (e) { out.tvlErr = String(e); }
+
+  try {
+    const skip = ["tether", "circle", "grayscale", "paxos", "collector-crypt", "courtyard"];
+    const prot = revenue.__err ? [] : (revenue.protocols || []);
+    out.revLeaders = prot.filter((p) => !skip.includes((p.slug || p.name || "").toLowerCase()))
+      .map((p) => ({ name: p.name, rev24: p.total24h, rev7: p.total7d, rev30: p.total30d, cat: p.category }))
+      .filter((p) => p.rev24 != null && p.rev24 > 0)
+      .sort((a, b) => b.rev24 - a.rev24).slice(0, 15);
+    out.revErr = revenue.__err || null;
+  } catch (e) { out.revErr = String(e); }
+
+  try {
+    const ps = protocols.__err ? [] : protocols;
+    const byCat = {};
+    ps.forEach((p) => {
+      const c = p.category || "Outros";
+      if (!byCat[c]) byCat[c] = { cat: c, tvl: 0, wsum: 0, wtot: 0 };
+      byCat[c].tvl += p.tvl ?? 0;
+      if (p.change_7d != null && p.tvl > 0) { byCat[c].wsum += p.change_7d * p.tvl; byCat[c].wtot += p.tvl; }
+    });
+    out.sectors = Object.values(byCat).map((c) => ({ cat: c.cat, tvl: c.tvl, ch7: c.wtot ? c.wsum / c.wtot : null }))
+      .filter((c) => c.tvl >= 50e6 && c.ch7 != null).sort((a, b) => b.ch7 - a.ch7).slice(0, 12);
+    out.catErr = protocols.__err || null;
+  } catch (e) { out.catErr = String(e); }
+
+  try {
+    const cs = chains.__err ? [] : chains;
+    const feeByChain = {};
+    if (!fees.__err && Array.isArray(fees.protocols)) {
+      fees.protocols.forEach((p) => {
+        const chs = p.chains || [];
+        const per = chs.length ? (p.total24h || 0) / chs.length : 0;
+        chs.forEach((ch) => { feeByChain[ch] = (feeByChain[ch] || 0) + per; });
+      });
+    }
+    out.chainTrends = cs.map((c) => ({ chain: c.name, tvl: c.tvl ?? 0, fees24: feeByChain[c.name] ?? null }))
+      .filter((c) => c.tvl >= 250e6).sort((a, b) => b.tvl - a.tvl).slice(0, 10)
+      .map((c) => { const organic = c.fees24 != null && c.fees24 >= 50e3; return { ...c, badge: c.fees24 == null ? null : organic ? "solid" : "weak" }; });
+    out.chainErr = chains.__err || null;
+  } catch (e) { out.chainErr = String(e); }
+
+  try {
+    const b = [];
+    if (out.regime?.tvl) b.push(`Regime: ${out.regime.label.toLowerCase()} — TVL total ${fmtUSD(out.regime.tvl)} (30d ${fmtPct(out.regime.c30)}).`);
+    if (out.sectors?.[0]) b.push(`Setor que mais cresce (7d): ${out.sectors[0].cat} (${fmtPct(out.sectors[0].ch7)}).`);
+    const topSolid = out.tvlTiers?.big?.find((x) => x.badge === "solid") || out.tvlTiers?.big?.[0];
+    if (topSolid) b.push(`Maior alta de TVL sólida: ${topSolid.name} (${fmtPct(topSolid.ch7)}, ganho ${fmtUSD(topSolid.gain7)}).`);
+    if (out.revLeaders?.[0]) b.push(`Líder em receita 24h: ${out.revLeaders[0].name} (${fmtUSD(out.revLeaders[0].rev24)}).`);
+    if (out.stable) b.push(out.stable.alert
+      ? `⚠ Alerta de stablecoins: oferta a contrair (7d ${fmtPct(out.stable.ch7)}). Capital a sair costuma anteceder quedas.`
+      : `Stablecoins estáveis (7d ${fmtPct(out.stable.ch7)}, 30d ${fmtPct(out.stable.ch30)}).`);
+    if (out.kpis?.dexVol) b.push(`Volume DEX 24h: ${fmtUSD(out.kpis.dexVol)}.`);
+    out.insights = b;
+  } catch (e) { out.insights = ["Insights indisponíveis."]; }
+  return out;
+}
+
+// ---------- UI ----------
+function Shell({ children }) {
+  return <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: "#fafaf8", color: "#1a1a1a", minHeight: "100vh", padding: "20px", maxWidth: 1100, margin: "0 auto", lineHeight: 1.45 }}>{children}</div>;
+}
+function Loading() { return <div style={{ padding: 60, textAlign: "center", color: "#666", fontSize: 15 }}>A puxar dados frescos do DefiLlama…</div>; }
+function ErrBox({ msg, onRetry }) {
+  return <div style={{ padding: 40, textAlign: "center" }}><p style={{ color: "#cf222e" }}>Falha ao carregar: {msg}</p><button onClick={onRetry} style={btnStyle}>Tentar de novo</button></div>;
+}
+function Header({ updated, onReload, auto, setAuto, loading }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 18, borderBottom: "2px solid #1a1a1a", paddingBottom: 12, flexWrap: "wrap", gap: 10 }}>
+      <div>
+        <h1 style={{ margin: 0, fontSize: 26, letterSpacing: -0.5 }}>Dashboard Analítico Crypto</h1>
+        <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Atualizado: {updated || "…"}{loading ? " · a atualizar…" : ""} · Fonte: DefiLlama (público)</div>
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <label style={{ fontSize: 12, color: "#555", display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Auto 5min
+        </label>
+        <button onClick={onReload} style={btnStyle}>↻ Reload</button>
+      </div>
+    </div>
+  );
+}
+function RegimeBanner({ regime }) {
+  if (!regime) return null;
+  const bg = regime.tone === "up" ? "#e6f4ea" : regime.tone === "down" ? "#fce8e8" : "#f0f0ee";
+  const bd = regime.tone === "up" ? "#1a7f37" : regime.tone === "down" ? "#cf222e" : "#999";
+  return (
+    <div style={{ background: bg, borderLeft: `4px solid ${bd}`, padding: "14px 18px", borderRadius: 6, marginBottom: 16 }}>
+      <div style={{ fontSize: 19, fontWeight: 700 }}>{regime.label}</div>
+      <div style={{ fontSize: 14, marginTop: 4 }}>TVL total: <b>{fmtUSD(regime.tvl)}</b> · 7d <span style={{ color: pctColor(regime.c7), fontWeight: 600 }}>{fmtPct(regime.c7)}</span> · 30d <span style={{ color: pctColor(regime.c30), fontWeight: 600 }}>{fmtPct(regime.c30)}</span></div>
+    </div>
+  );
+}
+function KPIs({ kpis }) {
+  if (!kpis) return null;
+  const items = [
+    { label: "TVL DeFi total", val: fmtUSD(kpis.tvl) },
+    { label: "Volume DEX 24h", val: fmtUSD(kpis.dexVol) },
+    { label: "Fees 24h", val: fmtUSD(kpis.fees24h) },
+    { label: "Oferta de stablecoins", val: fmtUSD(kpis.stableSupply) },
+  ];
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 18 }}>
+      {items.map((k, i) => (
+        <div key={i} style={{ background: "#fff", border: "1px solid #e5e5e2", borderRadius: 6, padding: "12px 14px" }}>
+          <div style={{ fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: 0.5 }}>{k.label}</div>
+          <div style={{ fontSize: 20, fontWeight: 700, marginTop: 3 }}>{k.val}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function Insights({ insights }) {
+  if (!insights?.length) return null;
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e5e2", borderRadius: 6, padding: "14px 18px", marginBottom: 18 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8, color: "#555" }}>Insights do dia</div>
+      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14 }}>{insights.map((b, i) => <li key={i} style={{ marginBottom: 5 }}>{b}</li>)}</ul>
+    </div>
+  );
+}
+function Section({ title, err, children }) {
+  return <div style={{ marginBottom: 24 }}><h2 style={{ fontSize: 17, marginBottom: 10, borderBottom: "1px solid #ddd", paddingBottom: 6 }}>{title}</h2>{err ? <div style={{ color: "#cf222e", fontSize: 13 }}>Secção indisponível: {String(err)}</div> : children}</div>;
+}
+function Badge({ kind }) {
+  if (kind === "solid") return <span style={{ ...badgeBase, background: "#e6f4ea", color: "#1a7f37" }}>sólido</span>;
+  if (kind === "low") return <span style={{ ...badgeBase, background: "#fff3e0", color: "#b35900" }}>base baixa</span>;
+  if (kind === "weak") return <span style={{ ...badgeBase, background: "#fff3e0", color: "#b35900" }}>não orgânico</span>;
+  return null;
+}
+function StableHealth({ data }) {
+  if (!data) return null;
+  return (
+    <div>
+      {data.alert
+        ? <div style={{ background: "#fce8e8", borderLeft: "4px solid #cf222e", padding: "10px 14px", borderRadius: 6, marginBottom: 12, fontSize: 13 }}>⚠ <b>Contração no setor de stablecoins</b> (7d {fmtPct(data.ch7)}, 30d {fmtPct(data.ch30)}). Capital a sair costuma anteceder quedas.</div>
+        : <div style={{ background: "#e6f4ea", borderLeft: "4px solid #1a7f37", padding: "10px 14px", borderRadius: 6, marginBottom: 12, fontSize: 13 }}>Sem alerta — oferta estável (7d {fmtPct(data.ch7)}, 30d {fmtPct(data.ch30)}).</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+        <div style={{ height: 200 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data.chart} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} interval={5} />
+              <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1e9).toFixed(0)}b`} width={42} />
+              <Tooltip formatter={(v) => fmtUSD(v)} />
+              <Line type="monotone" dataKey="val" stroke="#1a1a1a" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 11, color: "#888", textAlign: "center" }}>Oferta total de stablecoins — 30d</div>
+        </div>
+        <table style={tableStyle}>
+          <thead><tr><Th>Stablecoin</Th><Th right>Circulante</Th></tr></thead>
+          <tbody>
+            {data.top7.map((s, i) => <tr key={i}><Td>{s.sym}</Td><Td right>{fmtUSD(s.circ)}</Td></tr>)}
+            <tr style={{ fontWeight: 700, borderTop: "2px solid #1a1a1a" }}><Td>TOTAL</Td><Td right>{fmtUSD(data.total)}</Td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+function TvlTiers({ tiers }) {
+  if (!tiers) return null;
+  const blocks = [{ key: "big", label: "Grandes (≥ $1b)" }, { key: "mid", label: "Médios ($100m–$1b)" }, { key: "small", label: "Pequenos ($1m–$100m)" }];
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Ordenado por crescimento de TVL 7d. "Ganho 7d" = valor real em US$ — um % grande com ganho ínfimo é <Badge kind="low" /> (vem de base ínfima).</div>
+      {blocks.map((b) => (
+        <div key={b.key} style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{b.label}</div>
+          <table style={tableStyle}>
+            <thead><tr><Th>Protocolo</Th><Th right>TVL</Th><Th right>Ganho 7d</Th><Th right>7d</Th><Th right>24h</Th><Th>Selo</Th></tr></thead>
+            <tbody>{tiers[b.key]?.map((p, i) => (
+              <tr key={i}><Td>{p.name}</Td><Td right>{fmtUSD(p.tvl)}</Td><Td right>{fmtUSD(p.gain7)}</Td><Td right style={{ color: pctColor(p.ch7) }}>{fmtPct(p.ch7)}</Td><Td right style={{ color: pctColor(p.ch1) }}>{fmtPct(p.ch1)}</Td><Td><Badge kind={p.badge} /></Td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+function RevenueLeaders({ data }) {
+  if (!data?.length) return <div style={{ fontSize: 13, color: "#888" }}>Sem dados.</div>;
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Receita real 24h por protocolo (emissores/custódia excluídos).</div>
+      <table style={tableStyle}>
+        <thead><tr><Th>Protocolo</Th><Th>Categoria</Th><Th right>Receita 24h</Th><Th right>7d</Th><Th right>30d</Th></tr></thead>
+        <tbody>{data.map((p, i) => (
+          <tr key={i}><Td>{p.name}</Td><Td style={{ color: "#888", fontSize: 12 }}>{p.cat || "—"}</Td><Td right style={{ fontWeight: 600 }}>{fmtUSD(p.rev24)}</Td><Td right>{fmtUSD(p.rev7)}</Td><Td right>{fmtUSD(p.rev30)}</Td></tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
+function Sectors({ data, note }) {
+  if (!data?.length) return <div style={{ fontSize: 13, color: "#888" }}>{note}</div>;
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Agregado por categoria a partir dos protocolos (aproximação). Crescimento 7d ponderado por TVL.</div>
+      <div style={{ background: "#eef6f0", borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontSize: 14 }}>Setor nº1: <b>{data[0].cat}</b> ({fmtPct(data[0].ch7)})</div>
+      <table style={tableStyle}>
+        <thead><tr><Th>Categoria</Th><Th right>7d</Th><Th right>TVL</Th></tr></thead>
+        <tbody>{data.map((c, i) => <tr key={i}><Td>{c.cat}</Td><Td right style={{ color: pctColor(c.ch7) }}>{fmtPct(c.ch7)}</Td><Td right>{fmtUSD(c.tvl)}</Td></tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+function ChainTrends({ data }) {
+  if (!data?.length) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Redes com TVL ≥ $250m. Selo <Badge kind="solid" /> = TVL com fees relevantes (uso real); <Badge kind="weak" /> = TVL sem fees a acompanhar. Variações 30d por rede no Pro.</div>
+      <table style={tableStyle}>
+        <thead><tr><Th>Rede</Th><Th right>TVL</Th><Th right>Fees 24h (aprox.)</Th><Th>Selo</Th></tr></thead>
+        <tbody>{data.map((c, i) => <tr key={i}><Td>{c.chain}</Td><Td right>{fmtUSD(c.tvl)}</Td><Td right>{c.fees24 == null ? "—" : fmtUSD(c.fees24)}</Td><Td><Badge kind={c.badge} /></Td></tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+function Footer() {
+  return <div style={{ marginTop: 28, paddingTop: 12, borderTop: "1px solid #ddd", fontSize: 11, color: "#999", textAlign: "center" }}>Fonte: DefiLlama (API pública). Não é recomendação de investimento. · P/S, unlocks US$ e variações 30d por protocolo/rede disponíveis no Cowork via MCP Pro.</div>;
+}
+
+const btnStyle = { background: "#1a1a1a", color: "#fff", border: "none", borderRadius: 6, padding: "8px 14px", fontSize: 13, cursor: "pointer", fontWeight: 600 };
+const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 13 };
+const badgeBase = { fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, textTransform: "uppercase", letterSpacing: 0.3, display: "inline-block" };
+const Th = ({ children, right }) => <th style={{ textAlign: right ? "right" : "left", padding: "6px 8px", borderBottom: "1px solid #ddd", color: "#888", fontWeight: 600, fontSize: 11, textTransform: "uppercase" }}>{children}</th>;
+const Td = ({ children, right, style }) => <td style={{ textAlign: right ? "right" : "left", padding: "6px 8px", borderBottom: "1px solid #f0f0ee", ...style }}>{children}</td>;
+
+ReactDOM.createRoot(document.getElementById("root")).render(<CryptoDash />);
+</script>
+</body>
+</html>
