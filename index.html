@@ -8,16 +8,20 @@
   html, body { margin: 0; padding: 0; background: #fafaf8; }
   * { box-sizing: border-box; }
 </style>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script>window.PropTypes = window.PropTypes || {};</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.js" onerror="window.__noRecharts=true"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
-const { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } = Recharts;
+const RC = (typeof Recharts !== "undefined") ? Recharts : {};
+const { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } = RC;
+const HAS_CHART = typeof Recharts !== "undefined";
 
 // ---------- Formatação ----------
 const fmtUSD = (n) => {
@@ -285,15 +289,21 @@ function StableHealth({ data }) {
         : <div style={{ background: "#e6f4ea", borderLeft: "4px solid #1a7f37", padding: "10px 14px", borderRadius: 6, marginBottom: 12, fontSize: 13 }}>Sem alerta — oferta estável (7d {fmtPct(data.ch7)}, 30d {fmtPct(data.ch30)}).</div>}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
         <div style={{ height: 200 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data.chart} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
-              <XAxis dataKey="date" tick={{ fontSize: 10 }} interval={5} />
-              <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1e9).toFixed(0)}b`} width={42} />
-              <Tooltip formatter={(v) => fmtUSD(v)} />
-              <Line type="monotone" dataKey="val" stroke="#1a1a1a" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+          {HAS_CHART ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data.chart} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} interval={5} />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${(v / 1e9).toFixed(0)}b`} width={42} />
+                <Tooltip formatter={(v) => fmtUSD(v)} />
+                <Line type="monotone" dataKey="val" stroke="#1a1a1a" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#f4f4f2", borderRadius: 6, fontSize: 12, color: "#888", textAlign: "center", padding: 10 }}>
+              Gráfico indisponível (Recharts não carregou). Os dados numéricos acima continuam corretos.
+            </div>
+          )}
           <div style={{ fontSize: 11, color: "#888", textAlign: "center" }}>Oferta total de stablecoins — 30d</div>
         </div>
         <table style={tableStyle}>
@@ -376,7 +386,13 @@ const badgeBase = { fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRad
 const Th = ({ children, right }) => <th style={{ textAlign: right ? "right" : "left", padding: "6px 8px", borderBottom: "1px solid #ddd", color: "#888", fontWeight: 600, fontSize: 11, textTransform: "uppercase" }}>{children}</th>;
 const Td = ({ children, right, style }) => <td style={{ textAlign: right ? "right" : "left", padding: "6px 8px", borderBottom: "1px solid #f0f0ee", ...style }}>{children}</td>;
 
-ReactDOM.createRoot(document.getElementById("root")).render(<CryptoDash />);
+try {
+  ReactDOM.createRoot(document.getElementById("root")).render(<CryptoDash />);
+} catch (e) {
+  document.getElementById("root").innerHTML =
+    '<div style="font-family:sans-serif;padding:40px;color:#cf222e">Erro ao iniciar o dashboard: ' + e.message +
+    '<br><br>Tenta recarregar com Ctrl+Shift+R. Se persistir, alguma extensão do browser pode estar a bloquear os scripts (React/Recharts).</div>';
+}
 </script>
 </body>
 </html>
